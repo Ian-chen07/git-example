@@ -24,6 +24,8 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: git fetch --no-tags "https://github.com/${HEAD_REPO}.git" "${HEAD_SHA}:refs/remotes/pr/head"
+      - name: 测试检查脚本
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: 运行只读检查脚本
         env:
           LOGIN: ${{ github.event.pull_request.user.login }}

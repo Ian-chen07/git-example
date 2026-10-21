@@ -11,6 +11,7 @@ import re
 import subprocess
 
 BLOCKLIST = {"update", "test", "111"}
+MAINTAINER = "mel0nyrame"
 
 login = os.environ["LOGIN"]
 branch = os.environ["BRANCH"]
@@ -19,11 +20,10 @@ body = os.environ.get("PR_BODY", "")
 head_ref = os.environ.get("HEAD_REF", "HEAD")
 
 errors = []
-warnings = []
 
 
 def git(*args):
-    return subprocess.run(["git", *args], capture_output=True, text=True).stdout
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
 
 
 def check_subject(text):
@@ -66,11 +66,9 @@ def section_content(text, heading):
     return clean_text(match.group(1))
 
 
-if not git("rev-parse", "--verify", "origin/main"):
-    errors.append("找不到 origin/main，检查无法运行，workflow 需要 fetch-depth: 0")
-
-if branch.lower() != "add-" + login.lower():
-    errors.append("分支名应为 add-" + login + "，现在是 " + branch)
+if not (re.fullmatch(r"(feat|fix|docs|chore)/[^\s/]+", branch)
+        or branch.lower() == "add-" + login.lower()):
+    errors.append("分支名应为《类型/内容》，类型限 feat fix docs chore；也兼容 add-" + login + "，现在是 " + branch)
 
 problem = check_subject(title)
 if problem:
@@ -80,7 +78,7 @@ if not body_content(body):
     errors.append("PR 描述为空，请按 PR 模板写明做了什么、改了哪些文件")
 else:
     for heading in ("做了什么", "改了哪些文件"):
-        if section_content(body, heading) == "":
+        if not section_content(body, heading):
             errors.append("PR 描述的「" + heading + "」没有填写，请按 PR 模板补充")
 
 for subject in git("log", "origin/main.." + head_ref, "--no-merges", "--format=%s").splitlines():
@@ -88,41 +86,21 @@ for subject in git("log", "origin/main.." + head_ref, "--no-merges", "--format=%
     if problem:
         errors.append("commit 信息" + problem + "，现在是 " + subject)
 
-own_file = re.compile("^members/" + re.escape(login) + "/" + re.escape(login) + r"\.(md|txt)$", re.I)
-other_member = re.compile(r"^members/([^/]+)/", re.I)
-own_folder_prefix = "members/" + login.lower() + "/"
-
-canonical_seen = False
-for line in git("-c", "core.quotepath=false", "diff", "--raw", "--no-renames",
-                "origin/main..." + head_ref).splitlines():
-    if not line:
-        continue
-    fields, path = line[1:].split("\t", 1)
-    parts = fields.split()
-    dst_mode, status = parts[1], parts[4]
-
-    folder = other_member.match(path)
-    if folder and folder.group(1).lower() != login.lower():
-        errors.append("不能改动别人的成员文件夹，请撤回对 " + path + " 的改动")
-        continue
-
-    if status.startswith("D"):
-        continue
-
-    if dst_mode not in ("100644", "100755"):
-        errors.append("子模块和符号链接不能提交，请删除 " + path)
-    elif own_file.match(path):
-        canonical_seen = True
-    elif path.lower().startswith(own_folder_prefix):
-        warnings.append("自己文件夹里的附加文件，仅作提示，路径 " + path)
-    else:
-        errors.append("文件位置不对，应为 members/" + login + "/" + login + ".md 或 .txt，现在是 " + path)
-
-if not canonical_seen:
-    errors.append("缺少成员文件 members/" + login + "/" + login + ".md 或 .txt")
-
-for w in warnings:
-    print("提示 " + w)
+if login.lower() != MAINTAINER:
+    own_file = re.compile(
+        "members/" + re.escape(login) + "/(?:" + re.escape(login) + r"\.md|[^/]+\.html)",
+        re.I,
+    )
+    # 禁用重命名检测，分别检查旧路径和新路径，避免借移动文件越权。
+    # NUL 分隔保留文件名中的换行和制表符，不能按行解析 Git 路径。
+    records = git("diff", "--raw", "-z", "--no-renames", "origin/main..." + head_ref).split("\0")
+    for fields, path in zip(records[0::2], records[1::2]):
+        parts = fields.split()
+        dst_mode, status = parts[1], parts[4]
+        if not own_file.fullmatch(path):
+            errors.append("只能改动 members/" + login + "/" + login + ".md 和该文件夹内的 .html 文件，请撤回对 " + repr(path) + " 的改动")
+        elif not status.startswith("D") and dst_mode not in ("100644", "100755"):
+            errors.append("子模块和符号链接不能提交，请删除 " + repr(path))
 
 if errors:
     print("检查未通过")
